@@ -1,0 +1,86 @@
+#!/bin/bash
+# Vault node bootstrap (rendered by Terraform's templatefile()).
+# Installs Vault with Raft storage + AWS KMS auto-unseal, initialises it once and
+# stores the init output (root token + recovery keys) in: ${store_name}
+set -euo pipefail
+exec > >(tee -a /var/log/vault-bootstrap.log) 2>&1
+
+# --- Install -------------------------------------------------------------------
+dnf install -y dnf-plugins-core shadow-utils jq   # shadow-utils: the vault RPM runs useradd
+dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+dnf install -y vault
+
+# --- Configure -----------------------------------------------------------------
+cat > /etc/vault.d/vault.hcl <<'EOF'
+ui            = true
+disable_mlock = true
+api_addr      = "http://127.0.0.1:8200"
+cluster_addr  = "http://127.0.0.1:8201"
+
+storage "raft" {
+  path    = "/opt/vault/data"
+  node_id = "vault-1"
+}
+
+# Demo: loopback only, no TLS. Reach it through an SSM session or SSM port
+# forwarding. Use TLS for anything beyond a single-node lab.
+listener "tcp" {
+  address     = "127.0.0.1:8200"
+  tls_disable = true
+}
+
+seal "awskms" {
+  region     = "${region}"
+  kms_key_id = "${kms_key_id}"
+}
+EOF
+
+systemctl enable --now vault
+
+# --- Initialise once and store the output ---------------------------------------
+cat > /usr/local/bin/vault-bootstrap.sh <<'EOF'
+#!/bin/bash
+# Idempotent: exits quietly if Vault is already initialised.
+set -euo pipefail
+export VAULT_ADDR=http://127.0.0.1:8200
+export AWS_REGION="${region}"
+
+store_init() {
+  ${store_init_cmd} >/dev/null
+}
+
+# `vault status` exits 0 = unsealed, 2 = sealed, 1 = error/unreachable.
+for _ in $(seq 60); do
+  rc=0; vault status >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 1 ] && break
+  sleep 2
+done
+
+STATUS=$(vault status -format=json || true)
+if [ "$(jq -r .initialized <<<"$STATUS")" = "true" ]; then
+  echo "Vault already initialised, nothing to do."
+  exit 0
+fi
+
+# The init output only lives in this variable until it is stored.
+INIT=$(vault operator init -format=json -recovery-shares=3 -recovery-threshold=2)
+
+# Retry: IAM changes can take a little while to reach a freshly booted node.
+for attempt in $(seq 10); do
+  if store_init <<<"$INIT"; then
+    echo "Vault initialised, init output stored in ${store_name}"
+    exit 0
+  fi
+  echo "Storing init output failed (attempt $attempt), retrying..."
+  sleep $((attempt * 3))
+done
+
+# Never lose the init output: fall back to a root-only file and fail loudly.
+umask 077
+printf '%s\n' "$INIT" > /root/vault-init.json
+echo "ERROR: could not store init output. Saved to /root/vault-init.json; store it manually and delete the file." >&2
+exit 1
+EOF
+chmod 700 /usr/local/bin/vault-bootstrap.sh
+
+/usr/local/bin/vault-bootstrap.sh
