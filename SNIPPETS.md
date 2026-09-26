@@ -59,8 +59,8 @@ sudo tail -f /var/log/vault-bootstrap.log
 
 ## 2. Writing the init output (on the node)
 
-This is what `templates/user-data.sh.tftpl` does. The core idea: pipe the init
-output straight into the store. It only ever lives in memory.
+This is what `modules/vault-node/templates/user-data.sh.tftpl` does. The core
+idea: pipe the init output straight into the store. It only ever lives in memory.
 
 ```bash
 INIT=$(vault operator init -format=json -recovery-shares=3 -recovery-threshold=2)

@@ -15,23 +15,10 @@ resource "aws_secretsmanager_secret" "vault_init" {
   # or cross-account access.
 }
 
-# Write-only for the node: it can store the init output but not read it back.
-data "aws_iam_policy_document" "store_init" {
-  statement {
-    sid       = "WriteVaultInitOutput"
-    actions   = ["secretsmanager:PutSecretValue"]
-    resources = [aws_secretsmanager_secret.vault_init.arn]
-  }
-}
-
-resource "aws_iam_role_policy" "store_init" {
-  name   = "vault-store-init"
-  role   = aws_iam_role.vault.id
-  policy = data.aws_iam_policy_document.store_init.json
-}
-
 locals {
-  store_name = aws_secretsmanager_secret.vault_init.name
+  store_name         = aws_secretsmanager_secret.vault_init.name
+  store_arn          = aws_secretsmanager_secret.vault_init.arn
+  store_write_action = "secretsmanager:PutSecretValue"
 
   # Run on the node with the init JSON on stdin.
   store_init_cmd = "aws secretsmanager put-secret-value --secret-id ${local.store_name} --secret-string file:///dev/stdin"

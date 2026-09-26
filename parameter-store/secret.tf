@@ -24,23 +24,10 @@ resource "aws_ssm_parameter" "vault_init" {
   # and the put-parameter call below must pass --key-id.
 }
 
-# Write-only for the node: it can store the init output but not read it back.
-data "aws_iam_policy_document" "store_init" {
-  statement {
-    sid       = "WriteVaultInitOutput"
-    actions   = ["ssm:PutParameter"]
-    resources = [aws_ssm_parameter.vault_init.arn]
-  }
-}
-
-resource "aws_iam_role_policy" "store_init" {
-  name   = "vault-store-init"
-  role   = aws_iam_role.vault.id
-  policy = data.aws_iam_policy_document.store_init.json
-}
-
 locals {
-  store_name = aws_ssm_parameter.vault_init.name
+  store_name         = aws_ssm_parameter.vault_init.name
+  store_arn          = aws_ssm_parameter.vault_init.arn
+  store_write_action = "ssm:PutParameter"
 
   # Run on the node with the init JSON on stdin.
   store_init_cmd = "aws ssm put-parameter --name ${local.store_name} --type SecureString --overwrite --value file:///dev/stdin"

@@ -16,10 +16,12 @@ leaves nothing behind.
 | [secrets-manager/](secrets-manager/) | `aws_secretsmanager_secret` with no version resource | Deletion can have a recovery window (`recovery_window_in_days`, default 0) |
 | [parameter-store/](parameter-store/) | `aws_ssm_parameter` with a write-only placeholder (`value_wo`) | Deletion is immediate. Bumping `value_wo_version` overwrites the stored root token |
 
-The two sets differ only in `secret.tf` (plus names in `outputs.tf`/`variables.tf`):
+Both roots call the shared implementation in `modules/vault-node`. The store
+resource, write permission, and read command are defined in each root's
+`secret.tf`; compare those files to see the backend-specific differences:
 
 ```bash
-diff -r secrets-manager parameter-store
+diff -u secrets-manager/secret.tf parameter-store/secret.tf
 ```
 
 Commands for reading, writing, rotating and cleaning up are in [SNIPPETS.md](SNIPPETS.md).
@@ -28,17 +30,19 @@ Commands for reading, writing, rotating and cleaning up are in [SNIPPETS.md](SNI
 
 | File | Contents |
 |---|---|
-| `versions.tf` | Terraform >= 1.16, AWS provider ~> 6.66, local state |
-| `variables.tf` | Region, name, instance type/architecture, subnet |
-| `main.tf` | Security group (egress 443 only), KMS unseal key, IAM role + instance profile, EC2 instance |
-| `secret.tf` | **Store-specific**: the secret container, the node's write-only policy, the store/read commands |
-| `outputs.tf` | Instance ID, secret name, ready-to-run SSM and read commands |
-| `templates/user-data.sh.tftpl` | Installs Vault, configures Raft + `awskms` seal, runs an idempotent init that stores the output |
+| Root `versions.tf` | Terraform >= 1.16, AWS provider ~> 6.66, local state |
+| Root `variables.tf` | Region, name, instance type/architecture, subnet |
+| Root `main.tf` | Calls the shared module with store-specific inputs |
+| Root `secret.tf` | **Store-specific** secret container, write permission inputs, and read command |
+| Root `outputs.tf` | Exposes instance ID, store name, and ready-to-run commands |
+| `modules/vault-node/` | Shared network, KMS, IAM, EC2, bootstrap template, and common outputs |
 
 ## Usage
 
 ```bash
 cd secrets-manager            # or parameter-store
+export AWS_PROFILE=your-sso-profile
+aws sso login
 terraform init
 terraform apply
 
