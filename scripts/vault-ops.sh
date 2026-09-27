@@ -140,8 +140,9 @@ pf_open() {
   aws ssm start-session --target "$INSTANCE_ID" --document-name AWS-StartPortForwardingSession \
     --parameters "portNumber=8200,localPortNumber=$PF_PORT" >"$PF_OUT" &
   PF_PID=$!
-  # Wait until the port forward accepts connections
-  for _ in $(seq 30); do (exec 3<>"/dev/tcp/127.0.0.1/$PF_PORT") 2>/dev/null && return 0; sleep 1; done
+  # Wait until the port forward accepts connections (a new session can take a
+  # while, e.g. right after a restore)
+  for _ in $(seq 60); do (exec 3<>"/dev/tcp/127.0.0.1/$PF_PORT") 2>/dev/null && return 0; sleep 1; done
   echo "Port forward to $INSTANCE_ID didn't come up" >&2
   pf_close
   return 1
