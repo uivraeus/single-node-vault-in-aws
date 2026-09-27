@@ -5,7 +5,7 @@ variable "kv_max_versions" {
 }
 
 variable "region" {
-  description = "AWS region of the Vault node (signs the aws/ auth login)."
+  description = "AWS region of the Vault node."
   type        = string
   default     = "eu-north-1"
 }
