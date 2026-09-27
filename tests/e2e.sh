@@ -5,7 +5,8 @@
 #
 #   --store sm|ps   secrets-manager (default) or parameter-store root
 #   --keep          don't destroy the test deployment at the end (debugging)
-#   smoke           ~10 min: deploy, canary, snapshot, replace node, rollback, snapshot auth repair
+#   smoke           ~12 min: deploy, canary, vault-config, snapshot, replace node, rollback,
+#                   snapshot auth repair
 #   full            ~25 min (sm) / ~10 min (ps): everything that applies to the store
 #   <scenario>...   run just these, in order (the first one should be a deploy)
 #
@@ -33,9 +34,9 @@ case $STORE in
   *)  echo "--store must be sm or ps" >&2; exit 1 ;;
 esac
 
-SMOKE="deploy canary snapshot replace_node rollback snapshot_auth_repair"
-FULL_SM="deploy_old canary snapshot upgrade resize_in_place arch_switch az_move rollback snapshot_auth_repair requisite corrupt_snapshot refusal store_failure"
-FULL_PS="deploy canary replace_node snapshot_auth_repair refusal store_failure"
+SMOKE="deploy canary vault_config snapshot replace_node rollback snapshot_auth_repair"
+FULL_SM="deploy_old canary vault_config snapshot upgrade resize_in_place arch_switch az_move rollback snapshot_auth_repair requisite corrupt_snapshot refusal store_failure"
+FULL_PS="deploy canary vault_config replace_node snapshot_auth_repair refusal store_failure"
 case ${1:-smoke} in
   smoke) SCENARIOS=$SMOKE; TIER=smoke ;;
   full)  if [ "$STORE" = sm ]; then SCENARIOS=$FULL_SM; else SCENARIOS=$FULL_PS; fi; TIER=full ;;
@@ -48,13 +49,17 @@ case $TF_VAR_name in vault-e2e-*) ;; *) echo "refusing: name must start with vau
 # TF_WORKSPACE must name an existing workspace, so create it without that set.
 # `workspace new` also selects it for the directory: put the previous one back, or
 # plain terraform commands in the root would silently use the e2e state afterwards.
-(
-  unset TF_WORKSPACE
-  previous=$(terraform -chdir="$TF_ROOT" workspace show)
-  terraform -chdir="$TF_ROOT" workspace new e2e >/dev/null 2>&1 || true
-  terraform -chdir="$TF_ROOT" workspace select "$previous" >/dev/null
-)
-terraform -chdir="$TF_ROOT" init -input=false >/dev/null
+# vault-config (Vault's own configuration) gets the same treatment.
+VC_ROOT=$REPO/vault-config
+for root in "$TF_ROOT" "$VC_ROOT"; do
+  (
+    unset TF_WORKSPACE
+    previous=$(terraform -chdir="$root" workspace show)
+    terraform -chdir="$root" workspace new e2e >/dev/null 2>&1 || true
+    terraform -chdir="$root" workspace select "$previous" >/dev/null
+  )
+  terraform -chdir="$root" init -input=false >/dev/null
+done
 
 # Versions for the upgrade scenario: start one release behind the defaults.
 OLD_VAULT=2.0.4   # must exist in the HashiCorp RPM repo (not every release does, e.g. 2.1.0)
@@ -171,6 +176,30 @@ sc_canary() {
   quiet ops vault secrets enable -path=kv kv-v2
   quiet ops vault kv put kv/canary value="$CANARY"
   canary_is "$CANARY"
+  check "no SSM sessions left open" no_active_sessions
+}
+
+# vault-config: first apply with a root token, after that Terraform logs in with
+# AWS credentials (terraform-admin) and must stay away from the node's aws/ parts.
+kv_option() { ops vault secrets list -format=json | jq -r --arg o "$1" '."secret/".options[$o]'; }
+kv_max_versions() { ops vault read -format=json secret/config | jq -r .data.max_versions; }
+vc_no_changes() { ops tf "$VC_ROOT" plan -detailed-exitcode -input=false; }   # exit 2: changes
+# What a terraform-admin token may do on the node's snapshot role ("deny" expected)
+admin_capability() {
+  local token
+  # -orphan: a child would die with the short-lived root token behind `ops vault`
+  token=$(ops vault token create -orphan -policy=terraform-admin -no-default-policy -ttl=5m -field=token | tail -1)
+  ops vault token capabilities "$token" "$1" | tail -1
+}
+
+sc_vault_config() {
+  check "first apply with a root token" ops tf --root "$VC_ROOT" apply -auto-approve -input=false
+  expect "secret/ is KV v2" 2 kv_option version
+  check "plan with AWS login: no changes" vc_no_changes
+  check "apply with AWS login" ops tf "$VC_ROOT" apply -auto-approve -input=false -var kv_max_versions=20
+  expect "setting applied" 20 kv_max_versions
+  expect "terraform-admin denied on raft-snapshot" deny admin_capability auth/aws/role/raft-snapshot
+  check "snapshots still work" ops snapshot e2e-after-config
   check "no SSM sessions left open" no_active_sessions
 }
 
@@ -329,6 +358,8 @@ cleanup() {
   else
     say "Destroying the test deployment..."
     terraform -chdir="$TF_ROOT" destroy -auto-approve -input=false >>"$LOG" 2>&1 || say "WARNING: destroy failed, see $LOG"
+    # vault-config's state described the Vault that's gone now
+    (unset TF_WORKSPACE; terraform -chdir="$VC_ROOT" workspace delete -force e2e >>"$LOG" 2>&1) || true
   fi
   summary
   exit $rc
