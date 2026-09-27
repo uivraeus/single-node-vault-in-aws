@@ -1,0 +1,11 @@
+# The schedule (OnCalendar) comes from a drop-in Terraform generates:
+# /etc/systemd/system/vault-snapshot.timer.d/schedule.conf
+[Unit]
+Description=Scheduled Vault Raft snapshots
+
+[Timer]
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

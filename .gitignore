@@ -12,3 +12,6 @@ terraform.rc
 
 # Should never exist here, but just in case
 vault-init.json
+
+# e2e test run logs
+tests/.runs/

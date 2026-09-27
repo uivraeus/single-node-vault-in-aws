@@ -28,9 +28,15 @@ locals {
   store_name         = aws_ssm_parameter.vault_init.name
   store_arn          = aws_ssm_parameter.vault_init.arn
   store_write_action = "ssm:PutParameter"
+  store_check_action = "ssm:DescribeParameters"
 
   # Run on the node with the init JSON on stdin.
   store_init_cmd = "aws ssm put-parameter --name ${local.store_name} --type SecureString --overwrite --value file:///dev/stdin"
+
+  # Run on the node: exit 0 if anything was written after Terraform's placeholder
+  # (version 1). Errs on the safe side after a value_wo_version bump.
+  # jq -e: the exit code is the answer (0 = true, 1 = false).
+  store_check_cmd = "aws ssm describe-parameters --parameter-filters Key=Name,Values=${local.store_name} --output json | jq -e '.Parameters[0].Version > 1'"
 
   # Run by humans, with their own credentials.
   read_init = "aws ssm get-parameter --region ${var.region} --name ${local.store_name} --with-decryption --query Parameter.Value --output text"

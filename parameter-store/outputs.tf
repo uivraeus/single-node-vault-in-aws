@@ -1,5 +1,9 @@
+output "region" {
+  value = var.region
+}
+
 output "instance_id" {
-  value = module.vault.instance_id
+  value = module.node.instance_id
 }
 
 output "parameter_name" {
@@ -7,25 +11,27 @@ output "parameter_name" {
 }
 
 output "kms_unseal_key_arn" {
-  value = module.vault.kms_unseal_key_arn
+  value = module.data.kms_key_arn
 }
 
-output "cmd_shell" {
-  description = "Shell on the Vault node."
-  value       = module.vault.cmd_shell
+output "data_volume_id" {
+  value = module.data.data_volume_id
 }
 
-output "cmd_port_forward" {
-  description = "Forward localhost:8200 to Vault; then use VAULT_ADDR=http://127.0.0.1:8200 locally."
-  value       = module.vault.cmd_port_forward
+output "snapshot_bucket" {
+  value = module.data.snapshot_bucket
 }
 
-output "cmd_bootstrap_log" {
-  description = "Follow the bootstrap on the node (run inside cmd_shell)."
-  value       = module.vault.cmd_bootstrap_log
+output "snapshot_object_key" {
+  description = "S3 object key (path in the bucket) of the latest Raft snapshot. Not a crypto key."
+  value       = module.node.snapshot_object_key
 }
 
-output "cmd_root_token" {
-  description = "Export the root token locally."
-  value       = "export VAULT_TOKEN=$(${local.read_init} | jq -r .root_token)"
+output "snapshot_s3_uri" {
+  value = "s3://${module.data.snapshot_bucket}/${module.node.snapshot_object_key}"
+}
+
+output "read_init_command" {
+  description = "Plumbing for scripts/vault-ops.sh: the store-specific command that prints the init JSON (root token + recovery keys), run with your own AWS credentials."
+  value       = local.read_init
 }

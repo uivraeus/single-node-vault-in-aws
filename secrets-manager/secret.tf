@@ -19,9 +19,14 @@ locals {
   store_name         = aws_secretsmanager_secret.vault_init.name
   store_arn          = aws_secretsmanager_secret.vault_init.arn
   store_write_action = "secretsmanager:PutSecretValue"
+  store_check_action = "secretsmanager:DescribeSecret"
 
   # Run on the node with the init JSON on stdin.
   store_init_cmd = "aws secretsmanager put-secret-value --secret-id ${local.store_name} --secret-string file:///dev/stdin"
+
+  # Run on the node: exit 0 if a value was ever stored (Terraform creates no version).
+  # jq -e: the exit code is the answer (0 = true, 1 = false).
+  store_check_cmd = "aws secretsmanager describe-secret --secret-id ${local.store_name} --output json | jq -e '(.VersionIdsToStages // {}) | length > 0'"
 
   # Run by humans, with their own credentials.
   read_init = "aws secretsmanager get-secret-value --region ${var.region} --secret-id ${local.store_name} --query SecretString --output text"

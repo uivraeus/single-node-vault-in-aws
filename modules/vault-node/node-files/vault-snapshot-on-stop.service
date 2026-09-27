@@ -1,0 +1,16 @@
+# Stopped before vault.service (and the network) at shutdown, so a clean stop,
+# including Terraform replacing the node, leaves a fresh snapshot behind.
+[Unit]
+Description=Vault Raft snapshot to S3 at shutdown
+After=vault.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/vault-snapshot.sh shutdown
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1,8 +1,6 @@
 # Vault init secrets: commands and snippets
 
-Commands for writing, reading, rotating and cleaning up the Vault init output
-(root token + recovery keys) in **Secrets Manager** (SM) or **SSM Parameter
-Store** (PS). Names match the Terraform defaults (`name = "vault-demo"`):
+Commands for writing, reading, rotating and cleaning up the Vault init output (root token + recovery keys) in **Secrets Manager** (SM) or **SSM Parameter Store** (PS). Names match the Terraform defaults (`name = "vault-demo"`):
 
 | | Secrets Manager | Parameter Store |
 |---|---|---|
@@ -34,33 +32,32 @@ INSTANCE_ID=$(terraform -chdir=secrets-manager output -raw instance_id)   # or p
 
 ## 1. Reaching Vault
 
-The listener binds to `127.0.0.1` only, so all access goes through SSM.
+The listener binds to `127.0.0.1` only, so all access goes through SSM. `scripts/vault-ops.sh` wraps the common cases (run from a Terraform root):
 
 ```bash
-# Shell on the node (as ssm-user; the instance role cannot read the secret)
-aws ssm start-session --target "$INSTANCE_ID"
+../scripts/vault-ops.sh shell            # shell on the node (as ssm-user; the instance role can't read the secret)
+../scripts/vault-ops.sh port-forward     # Vault on localhost:8200 until Ctrl-C, for your own vault CLI or tools
+../scripts/vault-ops.sh logs -f          # follow the bootstrap log
+../scripts/vault-ops.sh vault status     # the node's vault CLI as root, no local CLI or port forward needed
+```
 
-# Port forward: Vault on localhost:8200 on your machine
+The raw commands behind the first two:
+
+```bash
+aws ssm start-session --target "$INSTANCE_ID"
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSession \
   --parameters portNumber=8200,localPortNumber=8200
-
 export VAULT_ADDR=http://127.0.0.1:8200
-vault status
 ```
 
-Follow the bootstrap on the node:
-
-```bash
-sudo tail -f /var/log/vault-bootstrap.log
-```
+The rest of this file uses your own `vault` CLI through that port forward.
 
 ---
 
 ## 2. Writing the init output (on the node)
 
-This is what `modules/vault-node/templates/user-data.sh.tftpl` does. The core
-idea: pipe the init output straight into the store. It only ever lives in memory.
+This is what `modules/vault-node/node-files/vault-bootstrap.sh` does. The core idea: pipe the init output straight into the store. It only ever lives in memory.
 
 ```bash
 INIT=$(vault operator init -format=json -recovery-shares=3 -recovery-threshold=2)
@@ -75,18 +72,13 @@ aws ssm put-parameter --name "$PS_NAME" --type SecureString --overwrite \
 ```
 
 The bootstrap script also:
-- exits early if Vault is already initialised (safe to re-run:
-  `sudo /usr/local/bin/vault-bootstrap.sh`),
+- leaves an initialised Vault alone (safe to re-run: `sudo /usr/local/bin/vault-bootstrap.sh`), restores the latest snapshot onto an empty data volume instead of initialising, and refuses to initialise over init output an earlier node already stored (see [MAINTENANCE.md](MAINTENANCE.md#recovery)),
 - retries the write (IAM changes can take a moment to reach a new node),
-- falls back to `/root/vault-init.json` (mode 0600) if storing keeps failing,
-  so the output is never lost. If that happens, store it by hand from your machine:
+- if storing keeps failing, **discards** the new Vault (stops it, wipes `/opt/vault/data`) instead of keeping the init output anywhere else. Nothing is lost: it was a brand-new, empty Vault. Fix the cause (usually the node's permission to write the store), then initialise again:
 
 ```bash
-aws ssm start-session --target "$INSTANCE_ID"          # then: sudo cat /root/vault-init.json
-# copy the JSON, then locally:
-aws secretsmanager put-secret-value --secret-id "$SM_ID" --secret-string file://vault-init.json
-aws ssm put-parameter --name "$PS_NAME" --type SecureString --overwrite --value file://vault-init.json
-# ...and delete both copies: `sudo rm /root/vault-init.json` on the node, `rm vault-init.json` locally
+../scripts/vault-ops.sh run 'systemctl start vault && /usr/local/bin/vault-bootstrap.sh'
+../scripts/vault-ops.sh wait-ready
 ```
 
 ---
@@ -127,21 +119,15 @@ vault-login() {
 }
 ```
 
-The Terraform `vault` provider reads `VAULT_ADDR`/`VAULT_TOKEN` from the
-environment, so `vault-login` also covers Terraform runs. Don't read the token
-with a `data` source; that writes it into state.
+The Terraform `vault` provider reads `VAULT_ADDR`/`VAULT_TOKEN` from the environment, so `vault-login` also covers Terraform runs. Don't read the token with a `data` source; that writes it into state.
 
 ---
 
 ## 4. Rotating the root token (for example when someone leaves)
 
-Uses the stored recovery keys to run `generate-root`, stores the new token,
-and only then revokes the old one. Run it with the port forward active.
+Uses the stored recovery keys to run `generate-root`, stores the new token, and only then revokes the old one. Run it with the port forward active.
 
-Since **Vault 2.0**, `sys/generate-root` needs a valid Vault token **in addition
-to** the key shares (it was unauthenticated before). The script authenticates
-with the current root token. If that token is lost or broken, see
-[4b](#4b-lost-root-token-generate-root-without-a-token).
+Since **Vault 2.0**, `sys/generate-root` needs a valid Vault token **in addition to** the key shares (it was unauthenticated before). The script authenticates with the current root token. If that token is lost or broken, see [4b](#4b-lost-root-token-generate-root-without-a-token).
 
 ```bash
 #!/usr/bin/env bash
@@ -197,9 +183,7 @@ echo "Root token rotated and stored."
 
 ### 4b. Lost root token: generate-root without a token
 
-If the stored token no longer works, you can't authenticate to `generate-root`.
-Temporarily allow unauthenticated access on the node (in an SSM shell), run
-`rotate-root.sh` as usual (it notices the dead token), then turn it off again:
+If the stored token no longer works, you can't authenticate to `generate-root`. Temporarily allow unauthenticated access on the node (in an SSM shell), run `rotate-root.sh` as usual (it notices the dead token), then turn it off again:
 
 ```bash
 # on the node: add the top-level setting and reload (SIGHUP, no restart needed)
@@ -217,8 +201,7 @@ sudo systemctl reload vault
 
 ## 5. History and undo
 
-Both stores keep earlier values, which helps if something overwrites the secret
-(for example a re-bootstrapped node).
+Both stores keep earlier values, which helps if something overwrites the secret. A node with an empty data volume restores from the latest snapshot instead of initialising, and refuses to initialise over existing init output when there is no snapshot (see [MAINTENANCE.md](MAINTENANCE.md#recovery)), so this should only happen on purpose.
 
 ```bash
 # Secrets Manager: versions are labelled AWSCURRENT / AWSPREVIOUS
@@ -236,8 +219,7 @@ aws ssm get-parameter --name "$PS_NAME:2" --with-decryption --query Parameter.Va
 
 ## 6. Who read it? (CloudTrail)
 
-Reads are management events, so they're logged by default and kept for 90 days
-in the event history.
+Reads are management events, so they're logged by default and kept for 90 days in the event history.
 
 ```bash
 aws cloudtrail lookup-events \
@@ -253,8 +235,7 @@ aws cloudtrail lookup-events \
 
 ## 7. Check that Terraform state doesn't hold the secret
 
-Run this after the node has bootstrapped **and** after a later `terraform plan`
-(the refresh is when a provider would read the value back).
+Run this after the node has bootstrapped **and** after a later `terraform plan` (the refresh is when a provider would read the value back).
 
 ```bash
 terraform -chdir=secrets-manager state pull | grep -c 'hvs\.'     # expect 0
@@ -280,6 +261,8 @@ terraform -chdir=parameter-store destroy
 | SM secret, `recovery_window_in_days = 0` | Deleted immediately. |
 | SM secret, window 7–30 | Scheduled for deletion; the name stays reserved, so re-applying with the same `name` fails until the window ends (or you restore / force-delete). |
 | KMS unseal key | Scheduled for deletion (7 days in this demo). Any Vault data or snapshot is unrecoverable once it's gone. |
+| EBS data volume | Deleted immediately. |
+| S3 snapshot bucket | Deleted with all snapshot versions (`force_destroy` in this demo). |
 
 ```bash
 # Secrets Manager: find, restore or force-delete pending secrets
@@ -293,7 +276,14 @@ KEY_ID=$(terraform -chdir=secrets-manager output -raw kms_unseal_key_arn)   # be
 aws kms cancel-key-deletion --key-id "$KEY_ID"
 aws kms enable-key --key-id "$KEY_ID"
 
-# Anything left behind with the demo's tags?
+# Anything left behind with the demo's tags? (The tagging API lists deleted resources
+# for a while; check suspicious ones with the service's own describe call.)
 aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=vault-demo \
   --query 'ResourceTagMappingList[].ResourceARN'
+```
+
+The e2e tests (`tests/e2e.sh`) use the Terraform workspace `e2e` and names starting with `vault-e2e-`, and destroy their resources at the end. If a run was killed hard:
+
+```bash
+TF_WORKSPACE=e2e TF_VAR_name=vault-e2e-sm terraform -chdir=secrets-manager destroy   # or -ps / parameter-store
 ```

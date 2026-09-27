@@ -1,0 +1,10 @@
+[Unit]
+Description=Vault Raft snapshot to S3
+After=vault.service
+# Only run if Vault is already running; never start it. (Requires= would start a
+# Vault that was stopped on purpose, e.g. after a failed boot-time restore.)
+Requisite=vault.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vault-snapshot.sh scheduled

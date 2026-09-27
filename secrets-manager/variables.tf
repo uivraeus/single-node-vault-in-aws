@@ -11,24 +11,13 @@ variable "name" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. Must match var.architecture."
+  description = "EC2 instance type. Must support the AMI's architecture (see ami_name)."
   type        = string
   default     = "t4g.small"
 }
 
-variable "architecture" {
-  description = "CPU architecture for the Amazon Linux 2023 AMI."
-  type        = string
-  default     = "arm64"
-
-  validation {
-    condition     = contains(["arm64", "x86_64"], var.architecture)
-    error_message = "architecture must be arm64 or x86_64."
-  }
-}
-
 variable "subnet_id" {
-  description = "Subnet for the Vault node. Defaults to a subnet in the default VPC."
+  description = "Subnet for the Vault node; the data volume lives in its availability zone. Changing the zone means a new, empty data volume. Defaults to a subnet in the default VPC."
   type        = string
   default     = null
 }
@@ -48,4 +37,16 @@ variable "recovery_window_in_days" {
     condition     = var.recovery_window_in_days == 0 || (var.recovery_window_in_days >= 7 && var.recovery_window_in_days <= 30)
     error_message = "recovery_window_in_days must be 0 or between 7 and 30."
   }
+}
+
+variable "vault_version" {
+  description = "Vault Community version. Changing it replaces the node."
+  type        = string
+  default     = "2.1.1"
+}
+
+variable "ami_name" {
+  description = "Exact Amazon-owned AMI name (release, kernel, architecture). Changing it replaces the node."
+  type        = string
+  default     = "al2023-ami-2023.12.20260918.0-kernel-6.12-arm64"
 }
