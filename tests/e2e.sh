@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # End-to-end tests against real AWS resources, using the real Terraform roots.
 #
-# usage: tests/e2e.sh [--store sm|ps] [--keep] [smoke | full | <scenario>...]
+# usage: tests/e2e.sh [--store sm|ps] [--keep] [smoke | core | full | <scenario>...]
 #
 #   --store sm|ps   secrets-manager (default) or parameter-store root
 #   --keep          don't destroy the test deployment at the end (debugging)
-#   smoke           ~10-15 min: deploy, canary, vault-config, snapshot, replace node, rollback,
-#                   snapshot auth repair
+#   smoke           ~5 min: deploy, canary, vault-config, snapshot
+#   core            ~10-15 min: smoke, plus replace node, rollback, snapshot auth repair
 #   full            ~25 min (sm) / ~10 min (ps): everything that applies to the store
 #   <scenario>...   run just these, in order (the first one should be a deploy)
 #
@@ -34,11 +34,13 @@ case $STORE in
   *)  echo "--store must be sm or ps" >&2; exit 1 ;;
 esac
 
-SMOKE="deploy canary vault_config snapshot replace_node rollback snapshot_auth_repair"
+SMOKE="deploy canary vault_config snapshot"
+CORE="$SMOKE replace_node rollback snapshot_auth_repair"
 FULL_SM="deploy_old canary vault_config snapshot upgrade resize_in_place arch_switch az_move rollback snapshot_auth_repair requisite corrupt_snapshot refusal store_failure"
 FULL_PS="deploy canary vault_config replace_node snapshot_auth_repair refusal store_failure"
 case ${1:-smoke} in
   smoke) SCENARIOS=$SMOKE; TIER=smoke ;;
+  core)  SCENARIOS=$CORE; TIER=core ;;
   full)  if [ "$STORE" = sm ]; then SCENARIOS=$FULL_SM; else SCENARIOS=$FULL_PS; fi; TIER=full ;;
   *)     SCENARIOS="$*"; TIER=custom ;;
 esac

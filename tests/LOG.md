@@ -6,7 +6,8 @@ How to run (costs a few cents: small instances for under an hour):
 
 ```bash
 export AWS_PROFILE=...            # credentials for a lab account
-tests/e2e.sh smoke                # ~12 min, secrets-manager root
+tests/e2e.sh smoke                # ~5 min, secrets-manager root
+tests/e2e.sh core                 # ~10-15 min
 tests/e2e.sh full                 # ~25 min
 tests/e2e.sh --store ps full      # parameter-store root, ~10 min (can run alongside sm)
 tests/e2e.sh deploy canary az_move   # single scenarios, in order
