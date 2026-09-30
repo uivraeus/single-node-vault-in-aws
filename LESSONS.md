@@ -32,8 +32,6 @@ Non-obvious behaviour of AWS, SSM, Terraform and Vault that we ran into while bu
 - **A Raft snapshot restore needs an initialised Vault and a token.** An empty node initialises a throwaway Vault first, restores over it, and never stores the throwaway output. With the same KMS key, the restored Vault unseals itself and has its original root token and recovery keys back.
 - **An auth method's configuration lives in Vault's data.** The `raft-snapshot` role bound to the node's IAM role survives node replacement and restores, which is why the role has a fixed name: a new name would break the binding.
 - **The Vault RPM's `vault.service` reads `/etc/vault.d/vault.env`,** and the `awskms` seal takes its key and region from `VAULT_AWSKMS_SEAL_KEY_ID` and `AWS_REGION`. So the Vault config file needs no deployment-specific values.
-- **AWS auth logins must be signed for `us-east-1`** unless the `aws/` mount has its own `sts_endpoint`/`sts_region`: Vault forwards the signed `GetCallerIdentity` request to the global STS endpoint. The `vault` CLI signs for `us-east-1` by default, but the Terraform provider's `auth_login_aws` signs for its `aws_region`; with `eu-north-1` the login fails with "Credential should be scoped to a valid region". `vault-config/` sets `aws_region = "us-east-1"` rather than touching the node-owned mount config.
-- **Bind SSO roles without their path.** With `resolve_aws_unique_ids = false`, Vault matches the login's assumed-role ARN, which has no path, while SSO roles live under `role/aws-reserved/sso.amazonaws.com/<region>/`. `vault-config/admin.tf` strips the path from the caller's role ARN.
 
 ## systemd
 

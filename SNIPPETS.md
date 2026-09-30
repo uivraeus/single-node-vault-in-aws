@@ -119,7 +119,7 @@ vault-login() {
 }
 ```
 
-For Terraform against Vault itself ([vault-config/](vault-config/)), use `scripts/vault-ops.sh tf` instead: it opens the port forward, and after the first apply Terraform logs in with your AWS credentials, not the root token (see the [README](README.md#configuring-vault-with-terraform)). Never read the root token with a Terraform `data` source; that writes it into state.
+For Terraform against Vault itself ([vault-config/](vault-config/)), use `scripts/vault-ops.sh tf` instead: it opens the port forward and passes a short-lived root token (see the [README](README.md#configuring-vault-with-terraform)). Never read the root token with a Terraform `data` source; that writes it into state.
 
 ---
 
