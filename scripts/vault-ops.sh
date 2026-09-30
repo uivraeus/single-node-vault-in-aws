@@ -16,10 +16,8 @@
 #   apply [tf args]       Snapshot, terraform apply (upgrade, resize, ...), then wait
 #                         until the node is ready again and show its status
 #   vault <args>          Run the node's own vault CLI as root, e.g. vault kv get kv/foo
-#   tf [--root] <dir> [tf args]
-#                         Terraform in <dir> (e.g. ../vault-config) with VAULT_ADDR set
-#                         to a throwaway port forward. --root: with a short-lived root
-#                         token instead of AWS login, for that root's first apply
+#   tf <dir> [tf args]    Terraform in <dir> (e.g. ../vault-config) against Vault, through
+#                         a throwaway port forward and with a short-lived root token
 #   configure-snapshots   (Re)create the Vault auth the node needs for snapshots
 #   logs [-f]             The node's bootstrap log (-f: follow it, Ctrl-C to stop)
 #   shell                 Interactive shell on the node (as ssm-user; sudo works)
@@ -298,20 +296,18 @@ apply() {
 }
 
 # Terraform for a Vault configuration root (vault-config/), which talks to Vault
-# itself: through a port forward for the duration of the run.
+# itself: through a port forward, with a short-lived root token, for the duration
+# of the run.
 tf() {
-  local dir root=false
-  if [ "${1:-}" = --root ]; then root=true; shift; fi
-  [ $# -ge 1 ] || { echo "usage: tf [--root] <dir> [terraform args]" >&2; return 1; }
+  local dir
+  [ $# -ge 1 ] || { echo "usage: tf <dir> [terraform args]" >&2; return 1; }
   dir=$1; shift
   pf_open
   trap tf_done EXIT
   export VAULT_ADDR=http://127.0.0.1:$PF_PORT
-  if $root; then
-    MINTED_TOKEN=$(root_token terraform-bootstrap)
-    [ -n "$MINTED_TOKEN" ] || { echo "Could not get a root token from Vault" >&2; return 1; }
-    export VAULT_TOKEN=$MINTED_TOKEN TF_VAR_vault_auth=token
-  fi
+  MINTED_TOKEN=$(root_token terraform)
+  [ -n "$MINTED_TOKEN" ] || { echo "Could not get a root token from Vault" >&2; return 1; }
+  export VAULT_TOKEN=$MINTED_TOKEN
   terraform -chdir="$dir" "$@"
 }
 

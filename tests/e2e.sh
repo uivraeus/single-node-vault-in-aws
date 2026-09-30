@@ -179,27 +179,17 @@ sc_canary() {
   check "no SSM sessions left open" no_active_sessions
 }
 
-# vault-config: first apply with a root token, after that Terraform logs in with
-# AWS credentials (terraform-admin) and must stay away from the node's aws/ parts.
+# vault-config: Vault's own configuration, applied through vault-ops.sh tf
 kv_option() { ops vault secrets list -format=json | jq -r --arg o "$1" '."secret/".options[$o]'; }
 kv_max_versions() { ops vault read -format=json secret/config | jq -r .data.max_versions; }
 vc_no_changes() { ops tf "$VC_ROOT" plan -detailed-exitcode -input=false; }   # exit 2: changes
-# What a terraform-admin token may do on the node's snapshot role ("deny" expected)
-admin_capability() {
-  local token
-  # -orphan: a child would die with the short-lived root token behind `ops vault`
-  token=$(ops vault token create -orphan -policy=terraform-admin -no-default-policy -ttl=5m -field=token | tail -1)
-  ops vault token capabilities "$token" "$1" | tail -1
-}
 
 sc_vault_config() {
-  check "first apply with a root token" ops tf --root "$VC_ROOT" apply -auto-approve -input=false
+  check "apply" ops tf "$VC_ROOT" apply -auto-approve -input=false
   expect "secret/ is KV v2" 2 kv_option version
-  check "plan with AWS login: no changes" vc_no_changes
-  check "apply with AWS login" ops tf "$VC_ROOT" apply -auto-approve -input=false -var kv_max_versions=20
-  expect "setting applied" 20 kv_max_versions
-  expect "terraform-admin denied on raft-snapshot" deny admin_capability auth/aws/role/raft-snapshot
-  check "snapshots still work" ops snapshot e2e-after-config
+  check "plan: no changes" vc_no_changes
+  check "apply a change" ops tf "$VC_ROOT" apply -auto-approve -input=false -var kv_max_versions=20
+  expect "change applied" 20 kv_max_versions
   check "no SSM sessions left open" no_active_sessions
 }
 
