@@ -16,6 +16,8 @@
 #   apply [tf args]       Snapshot, terraform apply (upgrade, resize, ...), then wait
 #                         until the node is ready again and show its status
 #   vault <args>          Run the node's own vault CLI as root, e.g. vault kv get kv/foo
+#   tf <dir> [tf args]    Terraform in <dir> (e.g. ../vault-config) against Vault, through
+#                         a throwaway port forward and with a short-lived root token
 #   configure-snapshots   (Re)create the Vault auth the node needs for snapshots
 #   logs [-f]             The node's bootstrap log (-f: follow it, Ctrl-C to stop)
 #   shell                 Interactive shell on the node (as ssm-user; sudo works)
@@ -128,34 +130,61 @@ free_port() {
   return 1
 }
 
-# Mint a short-lived root token and print it response-wrapped: single use, valid for
-# 60 s. Only the wrapping token goes to the node (with-root-token unwraps it); the
-# root token is read with *your* AWS credentials and never leaves this machine.
-# Uses the HTTP API through a throwaway port forward, so no local vault CLI needed.
-# Called as $(root_wrap), where set -e doesn't apply: errors are checked explicitly.
-root_wrap() {
-  local port pid root wrap pf_out session_id
-  port=$(free_port) || return 1
-  pf_out=$(mktemp)
+# Open a throwaway port forward to Vault on a free local port. Sets PF_PORT, and
+# PF_PID/PF_OUT for pf_close.
+pf_open() {
+  PF_PORT=$(free_port) || return 1
+  PF_OUT=$(mktemp)
   aws ssm start-session --target "$INSTANCE_ID" --document-name AWS-StartPortForwardingSession \
-    --parameters "portNumber=8200,localPortNumber=$port" >"$pf_out" &
-  pid=$!
-  # Wait until the port forward accepts connections
-  for _ in $(seq 30); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 1; done
-  # Store-specific read command from the Terraform output
-  root=$(bash -c "$(tf_out read_init_command)" | jq -r .root_token)
-  # -H @-: headers from stdin, so the token doesn't show up in the process list
-  wrap=$(printf 'X-Vault-Token: %s\nX-Vault-Wrap-TTL: 60s\n' "$root" |
-    curl -sS -H @- -X POST -d '{"ttl": "15m", "renewable": false, "display_name": "vault-ops"}' \
-      "http://127.0.0.1:$port/v1/auth/token/create" | jq -r '.wrap_info.token // empty')
+    --parameters "portNumber=8200,localPortNumber=$PF_PORT" >"$PF_OUT" &
+  PF_PID=$!
+  # Wait until the port forward accepts connections (a new session can take a
+  # while, e.g. right after a restore)
+  for _ in $(seq 60); do (exec 3<>"/dev/tcp/127.0.0.1/$PF_PORT") 2>/dev/null && return 0; sleep 1; done
+  echo "Port forward to $INSTANCE_ID didn't come up" >&2
+  pf_close
+  return 1
+}
+
+pf_close() {
+  local session_id
+  [ -n "${PF_PID:-}" ] || return 0
   # The aws CLI runs the Session Manager plugin as a child process: stop both, or the
   # plugin lives on, keeping the port forward (and our stdout/stderr) open.
-  pkill -P "$pid" 2>/dev/null || true
-  kill "$pid" 2>/dev/null || true
+  pkill -P "$PF_PID" 2>/dev/null || true
+  kill "$PF_PID" 2>/dev/null || true
   # Killing them doesn't end the session in SSM (it would stay "Active"): do that too.
-  session_id=$(sed -n 's/^Starting session with SessionId: //p' "$pf_out" | tr -d '\r')
+  session_id=$(sed -n 's/^Starting session with SessionId: //p' "$PF_OUT" | tr -d '\r')
   [ -z "$session_id" ] || aws ssm terminate-session --session-id "$session_id" >/dev/null 2>&1 || true
-  rm -f "$pf_out"
+  rm -f "$PF_OUT"
+  PF_PID=
+}
+
+# usage: root_token <display name> <TTL> [wrap TTL]
+# Mint a short-lived child of the root token through the open port forward and
+# print it, or with a wrap TTL, a wrapping token for it. The root token is read
+# with *your* AWS credentials and never leaves this machine. Uses the HTTP API, so no
+# local vault CLI needed. Prints nothing on failure.
+root_token() {
+  local root headers
+  # Store-specific read command from the Terraform output
+  root=$(bash -c "$(tf_out read_init_command)" | jq -r .root_token)
+  headers="X-Vault-Token: $root"
+  [ -z "${3:-}" ] || headers+=$'\n'"X-Vault-Wrap-TTL: $3"
+  # -H @-: headers from stdin, so the token doesn't show up in the process list
+  printf '%s\n' "$headers" |
+    curl -sS -H @- -X POST -d "$(jq -nc --arg n "$1" --arg t "$2" '{ttl: $t, renewable: false, display_name: $n}')" \
+      "http://127.0.0.1:$PF_PORT/v1/auth/token/create" | jq -r '.wrap_info.token // .auth.client_token // empty'
+}
+
+# Mint a short-lived root token and print it response-wrapped: single use, valid for
+# 60 s. Only the wrapping token goes to the node (with-root-token unwraps it).
+# Called as $(root_wrap), where set -e doesn't apply: errors are checked explicitly.
+root_wrap() {
+  local wrap
+  pf_open || return 1
+  wrap=$(root_token vault-ops 15m 60s)
+  pf_close
   [ -n "$wrap" ] || { echo "Could not get a token from Vault (is it unsealed? is the stored root token valid?)" >&2; return 1; }
   echo "$wrap"
 }
@@ -266,6 +295,32 @@ apply() {
   wait_ready && status
 }
 
+# Terraform for a Vault configuration root (vault-config/), which talks to Vault
+# itself: through a port forward, with a short-lived root token, for the duration
+# of the run. The token is revoked when Terraform exits; its 1 h TTL only matters
+# if that doesn't happen, and leaves room for a slow apply prompt.
+tf() {
+  local dir
+  [ $# -ge 1 ] || { echo "usage: tf <dir> [terraform args]" >&2; return 1; }
+  dir=$1; shift
+  pf_open
+  trap tf_done EXIT
+  export VAULT_ADDR=http://127.0.0.1:$PF_PORT
+  MINTED_TOKEN=$(root_token terraform 1h)
+  [ -n "$MINTED_TOKEN" ] || { echo "Could not get a root token from Vault" >&2; return 1; }
+  export VAULT_TOKEN=$MINTED_TOKEN
+  terraform -chdir="$dir" "$@"
+}
+
+tf_done() {
+  # Revoke the root token right away instead of letting it expire
+  if [ -n "${MINTED_TOKEN:-}" ]; then
+    printf 'X-Vault-Token: %s\n' "$MINTED_TOKEN" |
+      curl -sS -H @- -X POST "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null || true
+  fi
+  pf_close
+}
+
 case $1 in
   run)        shift; run "$@" ;;
   status)     status ;;
@@ -276,6 +331,7 @@ case $1 in
   promote)    [ $# -eq 2 ] || { echo "usage: promote <version-id> (see: snapshots)" >&2; exit 1; }
               promote "$2" ;;
   apply)      shift; apply "$@" ;;
+  tf)         shift; tf "$@" ;;
   snapshots)  snapshots "${2:-10}" ;;
   configure-snapshots)
               wrap=$(root_wrap)

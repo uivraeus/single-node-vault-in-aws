@@ -43,8 +43,9 @@ Commands for reading, writing, rotating and cleaning up are in [SNIPPETS.md](SNI
 | Root `secret.tf` | **Store-specific** secret container, write/check permission inputs, and read command |
 | Root `outputs.tf` | Instance ID, store name, KMS key, data volume, snapshot bucket, and the store's read command (used by `vault-ops.sh`) |
 | `modules/vault-data/` | Long-lived: KMS unseal key, EBS data volume (pins the AZ), versioned S3 snapshot bucket |
+| `vault-config/` | Vault's own configuration with the `vault` provider: for now a KV v2 engine at `secret/` |
 | `modules/vault-node/` | Disposable: security group, IAM, EC2, volume attachment, and `node-files/` (setup script, bootstrap, snapshot script, systemd units, Vault config) |
-| `scripts/vault-ops.sh` | Entry point after `terraform apply`: status, logs, shell, port forward, Vault commands on the node, snapshots, restore, snapshot-guarded `terraform apply` |
+| `scripts/vault-ops.sh` | Entry point after `terraform apply`: status, logs, shell, port forward, Vault commands on the node, snapshots, restore, snapshot-guarded `terraform apply`, Terraform for `vault-config/` |
 | `tests/` | End-to-end tests against real AWS (`e2e.sh`) and their results (`LOG.md`) |
 | `LESSONS.md` | Non-obvious behaviour of AWS, SSM, Terraform and Vault, and where the repo handles it |
 
@@ -64,6 +65,21 @@ terraform apply
 ```
 
 `scripts/vault-ops.sh` (run it without arguments for the full list) is the entry point for everything after `terraform apply`: a shell on the node (`shell`), a port forward for your own tools (`port-forward`), snapshots, restores and upgrades (see [MAINTENANCE.md](MAINTENANCE.md)).
+
+## Configuring Vault with Terraform
+
+[vault-config/](vault-config/) is a separate Terraform root for what lives *inside* Vault: secrets engines, policies, auth methods. For now it has a KV v2 engine at `secret/`. It never holds secret values: Terraform creates the mounts, people and apps write the data.
+
+`vault-ops.sh tf` runs it: it opens a port forward for the duration of the run and gives Terraform a short-lived root token (1 hour, revoked when Terraform exits), read with your own AWS credentials like every other root-token use in this repo. Run it from the infrastructure root, whose outputs locate the node:
+
+```bash
+cd secrets-manager            # or parameter-store
+../scripts/vault-ops.sh tf ../vault-config init
+../scripts/vault-ops.sh tf ../vault-config apply
+```
+
+- **Scope:** the `aws/` auth mount and the `raft-snapshot` role and policy belong to the node bootstrap (`vault-configure-snapshots.sh`); `vault-config/` doesn't manage them.
+- **State:** Vault's configuration lives in Vault's data, so it survives node replacements and restores along with everything else. After `terraform destroy` of the infrastructure, `vault-config/`'s state describes a Vault that no longer exists: delete it (`rm vault-config/terraform.tfstate*`) before starting over.
 
 ## Requirements
 
