@@ -5,7 +5,7 @@
 #
 #   --store sm|ps   secrets-manager (default) or parameter-store root
 #   --keep          don't destroy the test deployment at the end (debugging)
-#   smoke           ~12 min: deploy, canary, vault-config, snapshot, replace node, rollback,
+#   smoke           ~10-15 min: deploy, canary, vault-config, snapshot, replace node, rollback,
 #                   snapshot auth repair
 #   full            ~25 min (sm) / ~10 min (ps): everything that applies to the store
 #   <scenario>...   run just these, in order (the first one should be a deploy)
