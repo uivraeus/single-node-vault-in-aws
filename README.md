@@ -70,7 +70,7 @@ terraform apply
 
 [vault-config/](vault-config/) is a separate Terraform root for what lives *inside* Vault: secrets engines, policies, auth methods. For now it has a KV v2 engine at `secret/`. It never holds secret values: Terraform creates the mounts, people and apps write the data.
 
-`vault-ops.sh tf` runs it: it opens a port forward for the duration of the run and gives Terraform a short-lived root token (15 minutes, revoked when Terraform exits), read with your own AWS credentials like every other root-token use in this repo. Run it from the infrastructure root, whose outputs locate the node:
+`vault-ops.sh tf` runs it: it opens a port forward for the duration of the run and gives Terraform a short-lived root token (1 hour, revoked when Terraform exits), read with your own AWS credentials like every other root-token use in this repo. Run it from the infrastructure root, whose outputs locate the node:
 
 ```bash
 cd secrets-manager            # or parameter-store

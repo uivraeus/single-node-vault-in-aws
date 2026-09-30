@@ -160,9 +160,9 @@ pf_close() {
   PF_PID=
 }
 
-# usage: root_token <display name> [wrap TTL]
-# Mint a short-lived (15 min) child of the root token through the open port forward
-# and print it, or with a wrap TTL, a wrapping token for it. The root token is read
+# usage: root_token <display name> <TTL> [wrap TTL]
+# Mint a short-lived child of the root token through the open port forward and
+# print it, or with a wrap TTL, a wrapping token for it. The root token is read
 # with *your* AWS credentials and never leaves this machine. Uses the HTTP API, so no
 # local vault CLI needed. Prints nothing on failure.
 root_token() {
@@ -170,10 +170,10 @@ root_token() {
   # Store-specific read command from the Terraform output
   root=$(bash -c "$(tf_out read_init_command)" | jq -r .root_token)
   headers="X-Vault-Token: $root"
-  [ -z "${2:-}" ] || headers+=$'\n'"X-Vault-Wrap-TTL: $2"
+  [ -z "${3:-}" ] || headers+=$'\n'"X-Vault-Wrap-TTL: $3"
   # -H @-: headers from stdin, so the token doesn't show up in the process list
   printf '%s\n' "$headers" |
-    curl -sS -H @- -X POST -d "$(jq -nc --arg n "$1" '{ttl: "15m", renewable: false, display_name: $n}')" \
+    curl -sS -H @- -X POST -d "$(jq -nc --arg n "$1" --arg t "$2" '{ttl: $t, renewable: false, display_name: $n}')" \
       "http://127.0.0.1:$PF_PORT/v1/auth/token/create" | jq -r '.wrap_info.token // .auth.client_token // empty'
 }
 
@@ -183,7 +183,7 @@ root_token() {
 root_wrap() {
   local wrap
   pf_open || return 1
-  wrap=$(root_token vault-ops 60s)
+  wrap=$(root_token vault-ops 15m 60s)
   pf_close
   [ -n "$wrap" ] || { echo "Could not get a token from Vault (is it unsealed? is the stored root token valid?)" >&2; return 1; }
   echo "$wrap"
@@ -297,7 +297,8 @@ apply() {
 
 # Terraform for a Vault configuration root (vault-config/), which talks to Vault
 # itself: through a port forward, with a short-lived root token, for the duration
-# of the run.
+# of the run. The token is revoked when Terraform exits; its 1 h TTL only matters
+# if that doesn't happen, and leaves room for a slow apply prompt.
 tf() {
   local dir
   [ $# -ge 1 ] || { echo "usage: tf <dir> [terraform args]" >&2; return 1; }
@@ -305,7 +306,7 @@ tf() {
   pf_open
   trap tf_done EXIT
   export VAULT_ADDR=http://127.0.0.1:$PF_PORT
-  MINTED_TOKEN=$(root_token terraform)
+  MINTED_TOKEN=$(root_token terraform 1h)
   [ -n "$MINTED_TOKEN" ] || { echo "Could not get a root token from Vault" >&2; return 1; }
   export VAULT_TOKEN=$MINTED_TOKEN
   terraform -chdir="$dir" "$@"
