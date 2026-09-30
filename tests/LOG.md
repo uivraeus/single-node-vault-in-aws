@@ -17,6 +17,19 @@ Tests run in a separate Terraform workspace (`e2e`) with names starting with `va
 
 <!-- New entries below this line -->
 
+## 2026-09-30 e2e smoke (sm)
+
+- Commit: 6af2d6d
+- Region: eu-north-1; default AMI: al2023-ami-2023.12.20260918.0-kernel-6.12-arm64
+- Duration: 4 min; full output: tests/.runs/20260930T184535Z-sm-smoke.log
+
+| Scenario | Result | Minutes |
+|---|---|---|
+| deploy | PASS | 1 |
+| canary | PASS | 0 |
+| vault_config | PASS | 0 |
+| snapshot | PASS | 0 |
+
 ## 2026-09-27 e2e smoke (sm)
 
 - Commit: f115f21
